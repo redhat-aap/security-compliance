@@ -1,0 +1,13 @@
+---
+sources:
+  - aws.cloudwatch:
+      filters:
+        - detail.state: ["running"]
+
+rules:
+  - name: New EC2 Detected
+    condition: event["detail-type"] == "EC2 Instance State-change Notification"
+    action:
+      run_job_template:
+        name: "Security-Compliance-WF-Template"
+        organization: "Default"

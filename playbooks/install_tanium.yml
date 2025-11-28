@@ -1,0 +1,102 @@
+---
+- name: Install and Configure Tanium
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tasks:
+# ----------------------------------------
+# Linux - RHEL 8 - Set facts and Download
+# ----------------------------------------
+    - block:
+        - name: Set Package | Filename for RHEL 8 AARCH64
+          set_fact:
+            package_file: "TaniumClient-rhe8.aarch64.rpm"
+          when:
+          - ansible_architecture == "aarch64"
+    
+        - name: Set Package | Filename for RHEL 8 x86_64
+          set_fact:
+            package_file: "TaniumClient-7.4.10.1086-1.rhe8.x86_64.rpm"
+          when:
+          - ansible_architecture == "x86_64"
+      when:
+      - ansible_distribution == "RedHat" 
+      - ansible_distribution_major_version == "8"
+
+# --------------------------------
+# Linux - Configure Tanium Client
+# --------------------------------
+    - name: Check if Tanium already installed
+      stat:
+        path: /opt/Tanium/TaniumClient
+      register: tanium_path
+
+    - block:
+        - name: Check if Tanium service exists
+          shell: systemctl list-unit-files | grep -w taniumclient.service || true
+          register: tanium_service
+          changed_when: false
+    
+        - name: Enable and start Tanium service if it exists
+          systemd:
+            name: taniumclient
+            enabled: yes
+            state: started
+          when: tanium_service.stdout != ""
+          
+        - name: Check if Tanium file already exists
+          stat:
+            path: /tmp/"{{ package_file }}"
+          register: rpm_stat
+        
+        - name: Download tanium client from S3
+          amazon.aws.s3_object:
+            bucket: "security-tools-storage"
+            object: "{{ package_file }}"
+            dest: "/tmp/taniumclient.rpm"
+            mode: get
+            region: "us-east-1"
+          when: not rpm_stat.stat.exists
+          register: s3_download
+
+# ------------- INSTALL TANIUM -------------
+        - name: Tanium | Install tanium rpm package
+          dnf:
+            name: /tmp/taniumclient.rpm
+            state: present
+          # shell: "rpm -ivh /tmp/taniumclient.rpm"
+          # ignore_errors: true
+
+# --------- COPY tanium-init.dat ---------
+        - name: Download and Copy tanium-init.dat file from S3
+          amazon.aws.s3_object:
+            bucket: "security-tools-storage"
+            object: "tanium-init.dat"
+            dest: "/opt/Tanium/TaniumClient/tanium-init.dat"
+            mode: get
+            region: "us-east-1"
+          when: not rpm_stat.stat.exists
+          register: s3_download
+
+        - name: Ensure the tanium-init.dat has right owner and group
+          file:
+            path: "/opt/Tanium/TaniumClient/tanium-init.dat"
+            mode: '0700'
+            owner: root
+            group: root
+
+# ------- CONFIGURE TANIUM -------
+        - name: Tanium | Configure tanium
+          shell: "{{ item }}"
+          with_items:
+            - /opt/Tanium/TaniumClient/TaniumClient config set ServerNameList tanium-srv-prod-z1.accenture.com,tanium-srv-prod-z2.accenture.com
+            - /opt/Tanium/TaniumClient/TaniumClient config set LogVerbosityLevel 1
+            - /opt/Tanium/TaniumClient/TaniumClient config set ServerPort 443
+            - /opt/Tanium/TaniumClient/TaniumClient config set ListenPort 17472
+            - /opt/Tanium/TaniumClient/TaniumClient config set Resolver nslookup
+
+# --------------- RESTART TANIUM --------------
+        - name: Restart | Restart taniumclient service
+          service:
+            name: taniumclient
+            state: restarted

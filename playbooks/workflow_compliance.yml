@@ -1,0 +1,18 @@
+---
+- import_playbook: install_splunk.yml
+- import_playbook: install_qualys.yml
+- import_playbook: install_mde.yml
+- import_playbook: install_tanium.yml
+
+- name: Tag instance as compliant (optional for AWS)
+  hosts: all
+  become: yes
+  tasks:
+    - name: Tag instance as compliant (optional for AWS)
+      amazon.aws.ec2_tag:
+        region: us-east-1
+        resource: "{{ ansible_ec2_instance_id }}"
+        tags:
+          Compliance: "Compliant"
+          CheckedBy: "AAP"
+      when: ansible_ec2_instance_id is defined

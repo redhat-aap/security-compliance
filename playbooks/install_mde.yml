@@ -1,0 +1,83 @@
+---
+- name: Install and Configure MDE
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+# ----------------------------------------
+# Linux - Set facts, Download and Install
+# ----------------------------------------
+    - name: Check if MDE service exists
+      shell: systemctl list-unit-files | grep -w mdatp.service || true
+      register: mde_service
+      changed_when: false
+    
+    - name: Enable and Start MDE service if it exists
+      systemd:
+        name: mdatp
+        enabled: yes
+        state: started
+      when: mde_service.stdout != ""
+      
+    - name: Set Package Filename
+      set_fact:
+        package_file: "mdatp-installer-linux.tar.gz"
+    
+    - name: Check if MDE binary file already exists
+      stat:
+        path: /tmp/mdatp-installer-linux.tar.gz
+      register: mde_package_file
+    
+    - name: Download MDE binary from S3
+      amazon.aws.s3_object:
+        bucket: "security-tools-storage"
+        object: "mdatp-installer-linux.tar.gz"
+        dest: "/tmp/mdatp-installer-linux.tar.gz"
+        mode: get
+        region: "us-east-1"
+      when: not mde_package_file.stat.exists
+      register: s3_download
+    
+    - name: Extract MDE installation files
+      unarchive:
+        src: /tmp/mdatp-installer-linux.tar.gz
+        dest: /tmp/
+        remote_src: yes
+        mode: 0700
+        owner: root
+        group: root
+    
+    - name: Find extracted MDE directory
+      find:
+        paths: /tmp
+        patterns: "mdatp*"
+        file_type: directory
+        depth: 2
+      register: extracted_dirs
+      
+    - name: Set the working directory if extraction found something
+      set_fact:
+        mde_dir: "{{ extracted_dirs.files[0].path }}"
+      when: extracted_dirs.files | length > 0
+    
+    - name: Fail if MDE directory not found
+      fail:
+        msg: "No MDE directory found after extraction — check the archive contents or extraction path."
+      when: extracted_dirs.files | length == 0
+    
+    - name: Ensure the MDE installer script has executable permission
+      file:
+        path: "/tmp/mdatp-installer-linux/mde_installer.sh"
+        mode: '0755'
+        state: file
+        
+    - name: Execute the activation script
+      shell: ./mde_installer.sh -i
+      args:
+        chdir: "/tmp/mdatp-installer-linux/"
+      register: script_output
+    
+    - name: Display script output
+      debug:
+        var: script_output.stdout

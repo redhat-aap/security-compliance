@@ -1,0 +1,121 @@
+---
+- name: Install and Configure Qualys Cloud Agent
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+# ------------------------------------------------
+# Linux Family - Set facts, Download and Install
+# ------------------------------------------------
+  tasks:
+    - name: Check if Qualys Cloud Agent is already installed
+      become: true
+      ansible.builtin.shell: rpm -q qualys-cloud-agent
+      register: qualys_check
+      ignore_errors: true
+
+    - block:
+        - name: Ensure Python3, pip, and boto libraries are installed
+          block:
+            - name: Install Python3 and pip
+              package:
+                name:
+                  - python3
+                  - python3-pip
+                state: present
+        
+            - name: Install boto3 and botocore using pip
+              pip:
+                name:
+                  - boto3
+                  - botocore
+                executable: pip3
+        
+        - name: Check if Qualys Cloud Agent file already exists
+          stat:
+            path: /tmp/"{{ qualys_binary }}"
+          register: rpm_stat
+        
+        - name: Download Qualys Cloud Agent from S3
+          amazon.aws.s3_object:
+            bucket: "security-tools-storage"
+            object: "{{ qualys_binary }}"
+            dest: "/tmp/QualysCloudAgent.rpm"
+            mode: get
+            region: "us-east-1"
+          when: not rpm_stat.stat.exists
+          register: s3_download
+        
+        - name: Verify S3 download result
+          debug:
+            msg: "File downloaded successfully to {{ s3_download.dest }}"
+          when:
+            - not rpm_stat.stat.exists
+            - s3_download is defined
+            - s3_download.changed | default(false)
+        
+        - name: Install Qualys Cloud Agent
+          become: true
+          ansible.builtin.command: sudo rpm -ivh /tmp/QualysCloudAgent.rpm
+          when: qualys_check.rc != 0
+        
+        - name: Verify installation
+          command: rpm -q qualys-cloud-agent
+          register: verify_install
+          changed_when: false
+        
+        - name: Display installed package
+          debug:
+            msg: "{{ verify_install.stdout }}"
+        
+      when: ansible_os_family == "RedHat" and qualys_check.rc != 0
+  
+    - block:
+        - name: wait 30 seconds for full Qualys installation
+          pause:
+            seconds: 30
+    
+        - name: Configure Qualys Agent on RHEL
+          command: "/usr/local/qualys/cloud-agent/bin/qualys-cloud-agent.sh ActivationId={{ qualys_activation_id }} CustomerId={{ qualys_customer_id }}"
+          args:
+            chdir: "/usr/local/qualys/cloud-agent/bin"
+          ignore_errors: true
+    
+        - name: Start Qualys service on RHEL
+          systemd:
+            name: qualys-cloud-agent.service
+            state: started
+            enabled: yes
+    
+      when: ansible_os_family == "RedHat" and qualys_check.rc != 0
+
+# -------------------------------------------------
+# Windows Family - Set facts, Download and Install
+# -------------------------------------------------
+    - block:
+        - name: Set package filename for Windows
+          set_fact:
+            package_file: "Windows_QualysCloudAgent.exe"
+        
+        - name: Download package from AWS S3
+          win_get_url:
+            url: "{{ qualys_url_windows }}"
+            dest: "C:\\Temp\\{{ package_file }}"
+        
+        - name: Install package from local path
+          win_command: >
+            C:\Temp\{{ package_file }} CustomerId={{ qualys_customer_id }} ActivationId={{ qualys_activation_id }} WebServiceUri=https://qagpublic.qg1.apps.qualys.com/CloudAgent/ /quiet /norestart
+          ignore_errors: true
+          register: script_output
+        
+        - name: wait 30 seconds for full Qualys installation
+          pause:
+            seconds: 30
+        
+        - name: Start Qualys Agent service on Windows
+          win_service:
+            name: "QualysAgent"
+            state: started
+            start_mode: auto
+      
+      when: ansible_os_family == "Windows"
